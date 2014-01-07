@@ -2,7 +2,8 @@ module Stream = struct
   type 'a t =
     { mutable listeners : ('a -> unit) list
     ; mutable value     : 'a
-(*     ; mutable uid       : int *)
+    (* TODO: add this field to manage unsubscribing
+    ; mutable uid       : int *)
     }
 
   let set t x = t.value <- x

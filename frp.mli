@@ -29,6 +29,10 @@ module Stream : sig
     val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
 
     val (>>|) : 'a t -> ('a -> 'b) -> 'b t
+
+    val (<$>) : ('a -> 'b) -> 'a t -> 'b t
+
+    val (<*>) : ('a -> 'b) t -> 'a t -> 'b t
   end
 end
 

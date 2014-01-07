@@ -1,3 +1,5 @@
+open Core.Std
+
 module Stream = struct
   type 'a t =
     { mutable listeners : ('a -> unit) list
@@ -14,6 +16,7 @@ module Stream = struct
   let trigger t x =
     t.value <- x;
     List.iter t.listeners ~f:(fun f -> f x)
+  ;;
 
   let iter t ~f = add_listener t f
 
@@ -28,6 +31,7 @@ module Stream = struct
   let filter t ~f =
     let t' = create t.value in
     add_listener t (fun x -> if f x then trigger t' x);
+    t'
   ;;
 
   let fold t ~init ~f =
@@ -54,7 +58,8 @@ module Stream = struct
 
   let when_ cond t =
     let t' = create t.value in
-    add_listener t (fun x -> if cond.value then trigger t' x;)
+    add_listener t (fun x -> if cond.value then trigger t' x;);
+    t'
   ;;
 
   let join t =

@@ -15,6 +15,8 @@ module Stream : sig
 
   val zip_with : 'a t -> 'b t -> f:('a -> 'b -> 'c) -> 'c t
 
+  val zip : 'a t -> 'b t -> ('a * 'b) t
+
   val merge : 'a t -> 'a t -> 'a t
 
   val when_ : bool t -> 'a t -> 'a t

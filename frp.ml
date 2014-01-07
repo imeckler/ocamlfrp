@@ -58,7 +58,7 @@ module Stream = struct
 
   let when_ cond t =
     let t' = create t.value in
-    add_listener t (fun x -> if cond.value then trigger t' x;);
+    add_listener t (fun x -> if cond.value then trigger t' x);
     t'
   ;;
 

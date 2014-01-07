@@ -1,5 +1,3 @@
-open Core.Std
-
 module Stream = struct
   type 'a t =
     { mutable listeners : ('a -> unit) list
@@ -15,7 +13,7 @@ module Stream = struct
 
   let trigger t x =
     t.value <- x;
-    List.iter t.listeners ~f:(fun f -> f x)
+    List.iter (fun f -> f x) t.listeners
   ;;
 
   let iter t ~f = add_listener t f

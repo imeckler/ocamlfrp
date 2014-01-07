@@ -75,7 +75,7 @@ module Stream = struct
 
     let (>>|) t f = map t ~f
 
-    let (<$>) f t = map x ~f
+    let (<$>) f t = map t ~f
     
     let (<*>) tf tx = zip_with tf tx ~f:(fun f x -> f x)
   end

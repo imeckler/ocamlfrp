@@ -43,7 +43,7 @@ module Stream = struct
     t'
   ;;
 
-  let zip t1 t2 = zip_with ~f:(fun x y -> (x, y))
+  let zip = zip_with ~f:(fun x y -> (x, y))
 
   let merge t1 t2 =
     let t' = create t1.value in

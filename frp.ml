@@ -1,70 +1,33 @@
 open Core
 
-module Behavior = struct
-  type 'a t =
-    { mutable listeners : ('a -> unit) list
-    ; mutable value     : 'a
-    }
+(*
+module Future = struct
+  type 'a t = { f : 'b. ('a -> 'b) -> 'b }
 
-  (*
-  type _ t =
-    | Fn     : (Time.t -> 'a) -> 'a t
-    | K      : 'a -> 'a t
-    | Switch : 'b Stream.t * ('b -> 'a Behavior.t) -> 'a Behavior.t
-  *)
+  let return x = { f = fun k -> k x }
 
-  let set t x = t.value <- x
+  type 'a stream = Cons ('a * 'a stream t)
 
-  let add_listener t f =
-    t.listeners <- f :: t.listeners 
-
-  let trigger t x =
-    t.value <- x;
-    List.iter ~f:(fun f -> f x) t.listeners
-  ;;
-
-  let return init = { value = init ; listeners = [] }
-
-  let map t ~f =
-    let t' = return (f t.value) in
-    add_listener t (fun x -> trigger t' (f x));
-    t'
-  ;;
-
-  let zip_with t1 t2 ~f =
-    let t' = return (f t1.value t2.value) in
-    add_listener t1 (fun x -> trigger t' (f x t2.value));
-    add_listener t2 (fun y -> trigger t' (f t1.value y));
-    t'
-  ;;
-
-  let ap tf tx = zip_with tf tx ~f:(fun f x -> f x)
-
-  let zip = zip_with ~f:(fun x y -> (x, y))
-
-  let join t =
-    let t' = return t.value.value in
-    add_listener t.value (fun x -> trigger t' x);
-    add_listener t (fun s ->
-      add_listener s (fun x -> trigger t' x)
-    );
-    t'
-  ;;
-
-  let bind t ~f = join (map t ~f)
-
-  module Infix = struct
-    let (>>=) t f = bind t ~f
-    let (>>|) t f = map t ~f
-    let (<$>) f t = map t ~f
-    let (<*>)     = ap
-  end
+  let clicks (elt : Jq.t) : 'a stream t =
+    let f k = k (Cons ()
+      Jq.on "click" elt (fun e ->
+      )
 end
 
-module Subscription = struct
+*)
+
+module Subscription : sig
+  type t
+
+  val cancel : t -> unit
+
+  val mk : (unit -> unit) -> t
+end = struct
   type t = unit -> unit
 
   let cancel t = t ()
+
+  let mk x = x
 end
 
 module Stream = struct
@@ -73,14 +36,14 @@ module Stream = struct
     ; mutable uid : int
     }
 
-  let trigger t x = Inttbl.iter ~f:(fun ~key ~data -> data x) t.listeners
-
   let iter t ~f =
     let key = t.uid in
     t.uid <- key + 1;
     Inttbl.add t.listeners ~key ~data:f;
-    fun () -> Inttbl.remove t.listeners key
+    Subscription.mk (fun () -> Inttbl.remove t.listeners key)
   ;;
+
+  let trigger t x = Inttbl.iter ~f:(fun ~key ~data -> data x) t.listeners
 
   let create () = { uid = 0 ; listeners = Inttbl.create () }
 
@@ -120,7 +83,7 @@ module Stream = struct
   let tail t = drop t 1
 
   let zip_with t1 t2 ~f =
-    let t             = create () in
+    let t               = create () in
     let on_value q q' g = fun x ->
       match Queue.dequeue q' with
       | None   -> Queue.enqueue q x
@@ -168,6 +131,44 @@ module Stream = struct
 
   let bind t ~f = join (map t ~f)
 
+  let ticks ms =
+    let t                    = create () in
+    let ms                   = Js.float ms in
+    let rec update () : unit =
+      trigger t (Time.now ());
+      Js.Unsafe.(fun_call (variable "setTimeout")
+        [| inject ms; inject (Js.wrap_callback update) |]
+      )
+    in
+    update ();
+    t
+  ;;
+
+  let delta t ~f =
+    let t'   = create () in
+    let last = ref None in
+    iter t ~f:(fun x ->
+      Option.iter !last ~f:(fun v -> trigger t' (f v x));
+      last := Some x
+    ) |> ignore;
+    t'
+  ;;
+
+  let deltas ms = delta (ticks ms) (fun t1 t2 -> Time.(t2 - t1))
+
+  let sequence ts =
+    let t   = create () in
+    let buf = Array.init (Array.length ts) ~f:(fun _ -> Queue.create ()) in
+    Array.iteri ts ~f:(fun i x ->
+      iter x ~f:(fun v ->
+        Queue.enqueue buf.(i) v;
+        if Array.for_all buf ~f:(fun q -> Option.is_some (Queue.peek q))
+        then trigger t (Array.map buf ~f:Queue.dequeue_exn)
+      ) |> ignore
+    );
+    t
+  ;;
+
   module Infix = struct
     let (>>=) t f = bind t ~f
 
@@ -176,6 +177,84 @@ module Stream = struct
     let (<$>) f t = map t ~f
     
     let (<*>) = ap
+  end
+end
+
+module Behavior = struct
+  type 'a t =
+    { mutable listeners : ('a -> unit) list
+    ; mutable value     : 'a
+    }
+
+  (*
+  type _ t =
+    | Fn     : (Time.t -> 'a) -> 'a t
+    | K      : 'a -> 'a t
+    | Switch : 'b Stream.t * ('b -> 'a Behavior.t) -> 'a Behavior.t
+  *)
+
+  let set t x = t.value <- x
+
+  let add_listener t f =
+    t.listeners <- f :: t.listeners 
+
+  let notify_listeners t =
+    List.iter ~f:(fun f -> f t.value) t.listeners
+
+  let trigger t x =
+    t.value <- x;
+    notify_listeners t
+  ;;
+
+  let return init = { value = init ; listeners = [] }
+
+  let map t ~f =
+    let t' = return (f t.value) in
+    add_listener t (fun x -> trigger t' (f x));
+    t'
+  ;;
+
+  let zip_with t1 t2 ~f =
+    let t' = return (f t1.value t2.value) in
+    add_listener t1 (fun x -> trigger t' (f x t2.value));
+    add_listener t2 (fun y -> trigger t' (f t1.value y));
+    t'
+  ;;
+
+  let ap tf tx = zip_with tf tx ~f:(fun f x -> f x)
+
+  let zip = zip_with ~f:(fun x y -> (x, y))
+
+  let join t =
+    let t' = return t.value.value in
+    add_listener t.value (fun x -> trigger t' x);
+    add_listener t (fun s ->
+      add_listener s (fun x -> trigger t' x)
+    );
+    t'
+  ;;
+
+  let sequence ts =
+    let t = return (Array.map ts ~f:(fun t -> t.value)) in
+    Array.iteri ts ~f:(fun i x ->
+      add_listener x (fun v -> t.value.(i) <- v; notify_listeners t)
+    );
+    t
+  ;;
+
+  let changes t =
+    let s = Stream.create () in
+    add_listener t (trigger t);
+    s
+  ;;
+
+  let bind t ~f = join (map t ~f)
+
+  module Infix = struct
+    let (>>=) t f = bind t ~f
+    let (>>|) t f = map t ~f
+    let (<$>) f t = map t ~f
+    let (<*>)     = ap
   end
 end
 

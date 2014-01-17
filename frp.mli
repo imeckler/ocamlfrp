@@ -1,33 +1,3 @@
-module Behavior : sig
-  type 'a t
-
-  val map : 'a t -> f:('a -> 'b) -> 'b t
-
-  val zip_with : 'a t -> 'b t -> f:('a -> 'b -> 'c) -> 'c t
-
-  val zip : 'a t -> 'b t -> ('a * 'b) t
-
-  val ap : ('a -> 'b) t -> 'a t -> 'b t
-
-  val return : 'a -> 'a t
-
-  val join : 'a t t -> 'a t
-
-  val bind : 'a t -> f:('a -> 'b t) -> 'b t
-  
-  module Infix : sig
-    val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
-
-    val (>>|) : 'a t -> ('a -> 'b) -> 'b t
-
-    val (<$>) : ('a -> 'b) -> 'a t -> 'b t
-
-    val (<*>) : ('a -> 'b) t -> 'a t -> 'b t
-  end
-
-  val set : 'a t -> 'a -> unit
-end
-
 module Subscription : sig
   type t
 
@@ -36,8 +6,6 @@ end
 
 module Stream : sig
   type 'a t
-
-  val trigger : 'a t -> 'a -> unit
 
 (*   val set : 'a t -> 'a -> unit *)
 
@@ -67,6 +35,12 @@ module Stream : sig
 
   val bind : 'a t -> f:('a -> 'b t) -> 'b t
 
+  val ticks : float -> Time.t t
+
+  val delta : 'a t -> f:('a -> 'a -> 'b) -> 'b t
+
+  val deltas : float -> Time.Span.t t
+
   module Infix : sig
     val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
 
@@ -76,7 +50,44 @@ module Stream : sig
 
     val (<*>) : ('a -> 'b) t -> 'a t -> 'b t
   end
+
+  val trigger : 'a t -> 'a -> unit
+
+  val create  : unit -> 'a t
 end
+
+module Behavior : sig
+  type 'a t
+
+  val map : 'a t -> f:('a -> 'b) -> 'b t
+
+  val zip_with : 'a t -> 'b t -> f:('a -> 'b -> 'c) -> 'c t
+
+  val zip : 'a t -> 'b t -> ('a * 'b) t
+
+  val ap : ('a -> 'b) t -> 'a t -> 'b t
+
+  val return : 'a -> 'a t
+
+  val join : 'a t t -> 'a t
+
+  val bind : 'a t -> f:('a -> 'b t) -> 'b t
+  
+  module Infix : sig
+    val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
+
+    val (>>|) : 'a t -> ('a -> 'b) -> 'b t
+
+    val (<$>) : ('a -> 'b) -> 'a t -> 'b t
+
+    val (<*>) : ('a -> 'b) t -> 'a t -> 'b t
+  end
+
+  val set : 'a t -> 'a -> unit
+
+  val changes : 'a t -> 'a Stream.t
+end
+
 
 val when_ : bool Behavior.t -> 'a Stream.t -> 'a Stream.t
 

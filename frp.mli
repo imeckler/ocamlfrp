@@ -1,7 +1,15 @@
+open Core
+
 module Subscription : sig
   type t
 
   val cancel : t -> unit
+
+  val merge : t -> t -> t
+
+  val concat : t array -> t
+
+  val make : (unit -> unit) -> t
 end
 
 module Stream : sig
@@ -36,6 +44,8 @@ module Stream : sig
   val bind : 'a t -> f:('a -> 'b t) -> 'b t
 
   val ticks : float -> Time.t t
+
+  val elapsed : float -> Time.Span.t t
 
   val delta : 'a t -> f:('a -> 'a -> 'b) -> 'b t
 
@@ -84,6 +94,12 @@ module Behavior : sig
   end
 
   val set : 'a t -> 'a -> unit
+
+  val trigger : 'a t -> 'a -> unit
+
+  val peek : 'a t -> 'a
+  
+  val notify_listeners : 'a t -> unit
 
   val changes : 'a t -> 'a Stream.t
 end

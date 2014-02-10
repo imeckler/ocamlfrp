@@ -21,13 +21,21 @@ module Subscription : sig
 
   val cancel : t -> unit
 
-  val mk : (unit -> unit) -> t
+  val make : (unit -> unit) -> t
+
+  val merge : t -> t -> t
+
+  val concat : t array -> t
 end = struct
   type t = unit -> unit
 
   let cancel t = t ()
 
-  let mk x = x
+  let merge t1 t2 = fun () -> cancel t1; cancel t2
+
+  let concat ts = fun () -> Array.iter ~f:cancel ts
+
+  let make x = x
 end
 
 module Stream = struct
@@ -40,10 +48,13 @@ module Stream = struct
     let key = t.uid in
     t.uid <- key + 1;
     Inttbl.add t.listeners ~key ~data:f;
-    Subscription.mk (fun () -> Inttbl.remove t.listeners key)
+    Subscription.make (fun () -> Inttbl.remove t.listeners key)
   ;;
 
-  let trigger t x = Inttbl.iter ~f:(fun ~key ~data -> data x) t.listeners
+  let trigger t x =
+    Inttbl.iter t.listeners ~f:(fun ~key ~data ->
+    data x
+  )
 
   let create () = { uid = 0 ; listeners = Inttbl.create () }
 
@@ -132,17 +143,18 @@ module Stream = struct
   let bind t ~f = join (map t ~f)
 
   let ticks ms =
-    let t                    = create () in
-    let ms                   = Js.float ms in
-    let rec update () : unit =
-      trigger t (Time.now ());
-      Js.Unsafe.(fun_call (variable "setTimeout")
-        [| inject ms; inject (Js.wrap_callback update) |]
-      )
-    in
-    update ();
+    let t      = create () in
+    set_interval ms ~f:(fun () -> trigger t (Time.now ()));
     t
   ;;
+
+  let elapsed ms =
+    let t = create () in
+    let start = Time.now () in
+    set_interval ms ~f:(fun () ->
+      trigger t Time.(now () - start)
+    );
+    t
 
   let delta t ~f =
     let t'   = create () in
@@ -195,11 +207,18 @@ module Behavior = struct
 
   let set t x = t.value <- x
 
+  let peek t = t.value
+
   let add_listener t f =
     t.listeners <- f :: t.listeners 
 
   let notify_listeners t =
     List.iter ~f:(fun f -> f t.value) t.listeners
+
+  let trigger t x =
+    set t x;
+    notify_listeners t
+  ;;
 
   let trigger t x =
     t.value <- x;
@@ -244,7 +263,7 @@ module Behavior = struct
 
   let changes t =
     let s = Stream.create () in
-    add_listener t (trigger t);
+    add_listener t (Stream.trigger s);
     s
   ;;
 
@@ -268,7 +287,7 @@ let scan s ~init ~f =
   let b = Behavior.return init in
   ignore (
     Stream.iter s ~f:(fun x ->
-      b.Behavior.value <- f b.Behavior.value x
+      Behavior.trigger b (f (Behavior.peek b) x)
     )
   );
   b

@@ -51,6 +51,8 @@ module Stream : sig
 
   val deltas : float -> Time.Span.t t
 
+  val skip_duplicates : ?eq:('a -> 'a -> bool) -> 'a t -> 'a t
+
   module Infix : sig
     val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
 
@@ -72,6 +74,8 @@ module Behavior : sig
   val map : 'a t -> f:('a -> 'b) -> 'b t
 
   val zip_with : 'a t -> 'b t -> f:('a -> 'b -> 'c) -> 'c t
+
+  val zip_many : 'a t array -> f:('a array -> 'b) -> 'b t
 
   val zip : 'a t -> 'b t -> ('a * 'b) t
 

@@ -58,6 +58,37 @@ module Stream = struct
 
   let create () = { uid = 0 ; listeners = Inttbl.create () }
 
+(*
+  let skip_duplicates' t =
+    let t' = create () in
+    let prev = ref None in
+    ignore (iter t ~f:(fun x ->
+      if Some x <> !prev
+      then begin
+        prev := Some x;
+        trigger t' x
+      end
+    ));
+    t'
+
+*)
+
+  let skip_duplicates ?(eq=(=)) t =
+    let t'   = create () in
+    let prev = ref None  in
+    ignore (iter t ~f:(fun x ->
+      let is_new = match !prev with
+        | None   -> true
+        | Some y -> not (eq x y)
+      in
+      if is_new
+      then begin
+        prev := Some x;
+        trigger t' x
+      end
+    ));
+    t'
+
   let map t ~f =
     let t' = create () in
     ignore (iter t ~f:(fun x -> trigger t' (f x)));
@@ -237,6 +268,14 @@ module Behavior = struct
     let t' = return (f t1.value t2.value) in
     add_listener t1 (fun x -> trigger t' (f x t2.value));
     add_listener t2 (fun y -> trigger t' (f t1.value y));
+    t'
+  ;;
+
+  let zip_many ts ~f =
+    let t' = return (f (Array.map ~f:peek ts)) in
+    Array.iter ts ~f:(fun t ->
+      add_listener t (fun _ -> trigger t' (f (Array.map ~f:peek ts)))
+    );
     t'
   ;;
 

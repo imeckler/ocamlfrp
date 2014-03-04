@@ -1,0 +1,17 @@
+OASISFormat: 0.4
+Name:        OCamlFRP
+Version:     0.1
+Synopsis:    An FRP library for js_of_ocaml
+Authors:     Izaak Meckler
+License:     WTFPL
+Plugins:     META (0.4)
+
+Library "frp"
+  Path:           src
+  BuildTools:     ocamlbuild, camlp4o
+  BuildDepends:   corejs
+  CompiledObject: byte
+  Modules:        Frp
+  ByteOpt:        -syntax camlp4o -package js_of_ocaml -package js_of_ocaml.syntax
+  XMETARequires:  corejs
+

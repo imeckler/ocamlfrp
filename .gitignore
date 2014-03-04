@@ -1,0 +1,11 @@
+*.cmo
+*.cmi
+_build
+.merlin
+setup.data
+setup.log
+_tags
+setup.ml
+myocamlbuild.ml
+src/*.mllib
+src/META

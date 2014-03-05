@@ -19,6 +19,8 @@ end
 module Subscription : sig
   type t
 
+  val empty : t
+
   val cancel : t -> unit
 
   val make : (unit -> unit) -> t
@@ -28,6 +30,8 @@ module Subscription : sig
   val concat : t array -> t
 end = struct
   type t = unit -> unit
+
+  let empty = fun () -> ()
 
   let cancel t = t ()
 

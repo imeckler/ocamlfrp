@@ -3,6 +3,8 @@ open Core
 module Subscription : sig
   type t
 
+  val empty : t
+
   val cancel : t -> unit
 
   val merge : t -> t -> t

@@ -4,5 +4,6 @@ all:
 	ocaml setup.ml -build
 
 install:
+	./remove_existing.sh
 	ocaml setup.ml -install
 

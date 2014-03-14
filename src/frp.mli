@@ -88,7 +88,9 @@ module Behavior : sig
   val join : 'a t t -> 'a t
 
   val bind : 'a t -> f:('a -> 'b t) -> 'b t
-  
+
+  val skip_duplicates : ?eq:('a -> 'a -> bool) -> 'a t -> 'a t
+
   module Infix : sig
     val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
 

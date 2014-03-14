@@ -262,6 +262,12 @@ module Behavior = struct
 
   let return init = { value = init ; listeners = [] }
 
+  (* TODO: This is hacky at the moment. Should return a subscription.
+   * Worth rethinking itering on Behaviors in general. *)
+  let iter t ~f =
+    f t.value;
+    add_listener t f
+
   let map t ~f =
     let t' = return (f t.value) in
     add_listener t (fun x -> trigger t' (f x));
@@ -306,6 +312,7 @@ module Behavior = struct
 
   let changes t =
     let s = Stream.create () in
+    Stream.trigger s t.value;
     add_listener t (Stream.trigger s);
     s
   ;;

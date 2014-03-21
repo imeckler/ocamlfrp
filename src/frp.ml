@@ -262,11 +262,10 @@ module Behavior = struct
 
   let return init = { value = init ; listeners = [] }
 
-  (* TODO: This is hacky at the moment. Should return a subscription.
-   * Worth rethinking itering on Behaviors in general. *)
-  let iter t ~f =
-    f t.value;
-    add_listener t f
+  let skip_duplicates ?(eq=(=)) t =
+    let t' = return t.value in
+    add_listener t (fun x -> if not (eq x t'.value) then trigger t' x);
+    t'
 
   let map t ~f =
     let t' = return (f t.value) in

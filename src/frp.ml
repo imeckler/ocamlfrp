@@ -43,12 +43,110 @@ end = struct
 end
 
 module Stream = struct
+  module Prim = struct
+    type 'a t =
+      { start        : unit -> (unit -> unit) (* returns a new stop function *)
+      (* (t.start ()) () should be observationally equivalent to (fun () -> ()) () *)
+      ; mutable stop : unit -> unit
+      ; mutable on   : bool
+      (* The on field shouldn't actually be necessary. I'm including it now
+       * for debugging purposes. A stream should be on exactly when on_listeners
+       * is nonempty *)
+      ; on_listeners  : ('a -> unit) Inttbl.t
+      ; off_listeners : ('a -> unit) Inttbl.t
+      ; mutable uid   : int
+      }
+
+    let trigger t x =
+      Inttbl.iter t.on_listeners ~f:(fun ~key:_ ~data -> data x)
+
+    let notify listeners x =
+      Inttbl.iter listeners ~f:(fun ~key:_ ~data -> data x)
+
+    let stop t = t.stop ()
+
+    let start t =
+      stop t; (* TODO: This might be an error *)
+      let stop' = t.start () in
+      t.stop <- stop'
+    ;;
+
+    let ticks ms =
+      let on_listeners  = Inttbl.create () in
+      let off_listeners = Inttbl.create () in
+      let start () =
+        let interval = set_interval ms ~f:(fun () ->
+          notify on_listeners (Time.now ())) in
+        fun () -> clear_interval interval
+      in
+      { start ; stop = (fun () -> ()); on_listeners; off_listeners; uid = 0; on = false }
+    ;;
+
+    let add_off_listener t f =
+      let key = t.uid in
+      t.uid <- t.uid + 1;
+      Inttbl.add t.off_listeners ~key ~data:f;
+      key
+    ;;
+
+    let add_on_listener t f =
+      let key = t.uid in
+      t.uid <- t.uid + 1;
+      Inttbl.add t.on_listeners ~key ~data:f;
+      key
+    ;;
+
+    let turn_on key t =
+      match Inttbl.find t.off_listeners key with
+      | None   -> failwith "Stream.Prim.turn_on: listener was not off"
+      | Some f ->
+        begin
+          Inttbl.add t.on_listeners ~key ~data:f;
+          Inttbl.remove t.off_listeners key;
+          if Inttbl.length t.on_listeners = 1 then start t;
+        end
+
+    let turn_off key t =
+      match Inttbl.find t.on_listeners key with
+      | None   -> failwith "Stream.Prim.turn_off: listener was not on"
+      | Some f ->
+        begin
+          Inttbl.add t.off_listeners ~key ~data:f;
+          Inttbl.remove t.on_listeners key;
+          if Inttbl.length t.on_listeners = 0 then stop t;
+        end
+  end
+(*
   type 'a t =
-    { listeners   : ('a -> unit) Inttbl.t
+    { listeners    : ('a -> unit) Inttbl.t
+     (* the more accurate type for listeners is
+      * (exists 'b. ('a -> 'b) t) Inttbl.t *)
+    ; side_effects : ('a -> unit) Inttbl.t
+    (* could do something like
+     * notify_parent      : (unit -> unit) *)
+    ; parent      : ext option
+(*     ; mutable on  : bool *)
     ; mutable uid : int
     }
+  and ext =
+    | In : 'a t -> ext
+    *)
 
-  let iter t ~f =
+  type 'a derived =
+    { mutable uid   : int
+    ; on_listeners  : ('a -> unit) Inttbl.t
+    ; off_listeners : ('a -> unit) Inttbl.t
+    ; parent        
+    }
+
+  let add_listener t f =
+    let key = t.uid in
+    t.uid <- key + 1;
+    Inttbl.add t.listeners ~key ~data:f;
+    Subscription.make (fun () -> Inttbl.remove t.listeners key)
+  ;;
+
+  let iter' t ~f =
     let key = t.uid in
     t.uid <- key + 1;
     Inttbl.add t.listeners ~key ~data:f;
@@ -56,11 +154,22 @@ module Stream = struct
   ;;
 
   let trigger t x =
-    Inttbl.iter t.listeners ~f:(fun ~key ~data ->
-    data x
-  )
+    if t.on then
+      Inttbl.iter t.listeners ~f:(fun ~key:_ ~data ->
+        data x)
+  ;;
 
-  let create () = { uid = 0 ; listeners = Inttbl.create () }
+  let rec turn_on : 'a. 'a t -> unit = fun t ->
+    t.on <- true;
+    Option.iter t.parent ~f:(fun (In p) -> turn_on p)
+  ;;
+
+  let create () =
+    { on        = false
+    ; uid       = 0
+    ; listeners = Inttbl.create ()
+    ; parent    = None
+    }
 
 (*
   let skip_duplicates' t =
@@ -74,13 +183,12 @@ module Stream = struct
       end
     ));
     t'
-
 *)
 
   let skip_duplicates ?(eq=(=)) t =
     let t'   = create () in
     let prev = ref None  in
-    ignore (iter t ~f:(fun x ->
+    ignore (add_listener t (fun x ->
       let is_new = match !prev with
         | None   -> true
         | Some y -> not (eq x y)
@@ -95,13 +203,13 @@ module Stream = struct
 
   let map t ~f =
     let t' = create () in
-    ignore (iter t ~f:(fun x -> trigger t' (f x)));
+    ignore (add_listener t (fun x -> trigger t' (f x)));
     t'
   ;;
 
   let filter t ~f =
     let t' = create () in
-    ignore (iter t ~f:(fun x -> if f x then trigger t' x));
+    ignore (add_listener t (fun x -> if f x then trigger t' x));
     t'
   ;;
 
@@ -110,7 +218,7 @@ module Stream = struct
     let last = ref init in
     trigger t' init;
     ignore (
-      iter t ~f:(fun x ->
+      add_listener t (fun x ->
         let y = f !last x in
         last := y;
         trigger t' y
@@ -122,7 +230,7 @@ module Stream = struct
   let drop t n =
     let seen = ref 0 in
     let t'   = create () in
-    ignore (iter t ~f:(fun x -> if !seen >= n then trigger t' x else incr seen));
+    ignore (add_listener t (fun x -> if !seen >= n then trigger t' x else incr seen));
     t'
   ;;
 
@@ -137,8 +245,8 @@ module Stream = struct
     in
 
     let q1, q2 = Queue.create (), Queue.create () in
-    ignore (iter t1 ~f:(on_value q1 q2 f));
-    ignore (iter t2 ~f:(on_value q2 q1 (fun x y -> f y x)));
+    ignore (add_listener t1 (on_value q1 q2 f));
+    ignore (add_listener t2 (on_value q2 q1 (fun x y -> f y x)));
     t
   ;;
 
@@ -148,16 +256,16 @@ module Stream = struct
 
   let merge t1 t2 =
     let t = create () in
-    ignore (iter t1 ~f:(fun x -> trigger t x));
-    ignore (iter t2 ~f:(fun x -> trigger t x));
+    ignore (add_listener t1 (fun x -> trigger t x));
+    ignore (add_listener t2 (fun x -> trigger t x));
     t
   ;;
 
   let join t =
     let t' = create () in
     ignore (
-      iter t ~f:(fun s ->
-        ignore (iter s ~f:(fun x -> trigger t' x))
+      add_listener t (fun s ->
+        ignore (add_listener s (fun x -> trigger t' x))
       )
     );
     t'
@@ -167,9 +275,9 @@ module Stream = struct
     let t'   = create () in
     let last = ref None in
     ignore (
-      iter t ~f:(fun s ->
+      add_listener t (fun s ->
         Option.iter !last ~f:(fun sub -> Subscription.cancel sub);
-        last := Some (iter s ~f:(fun x -> trigger t' x))
+        last := Some (add_listener s (fun x -> trigger t' x))
       )
     );
     t'
@@ -194,7 +302,7 @@ module Stream = struct
   let delta t ~f =
     let t'   = create () in
     let last = ref None in
-    iter t ~f:(fun x ->
+    add_listener t (fun x ->
       Option.iter !last ~f:(fun v -> trigger t' (f v x));
       last := Some x
     ) |> ignore;
@@ -207,7 +315,7 @@ module Stream = struct
     let t   = create () in
     let buf = Array.init (Array.length ts) ~f:(fun _ -> Queue.create ()) in
     Array.iteri ts ~f:(fun i x ->
-      iter x ~f:(fun v ->
+      add_listener x (fun v ->
         Queue.enqueue buf.(i) v;
         if Array.for_all buf ~f:(fun q -> Option.is_some (Queue.peek q))
         then trigger t (Array.map buf ~f:Queue.dequeue_exn)

@@ -48,13 +48,20 @@ module Stream = struct
       { start        : unit -> (unit -> unit) (* returns a new stop function *)
       (* (t.start ()) () should be observationally equivalent to (fun () -> ()) () *)
       ; mutable stop : unit -> unit
-      ; mutable on   : bool
       (* The on field shouldn't actually be necessary. I'm including it now
        * for debugging purposes. A stream should be on exactly when on_listeners
        * is nonempty *)
       ; on_listeners  : ('a -> unit) Inttbl.t
       ; off_listeners : ('a -> unit) Inttbl.t
       ; mutable uid   : int
+      }
+
+    let create ?(start=(fun () () -> ())) () =
+      { start
+      ; stop          = (fun () -> ())
+      ; on_listeners  = Inttbl.create ()
+      ; off_listeners = Inttbl.create ()
+      ; uid           = 0
       }
 
     let trigger t x =
@@ -79,22 +86,18 @@ module Stream = struct
           notify on_listeners (Time.now ())) in
         fun () -> clear_interval interval
       in
-      { start ; stop = (fun () -> ()); on_listeners; off_listeners; uid = 0; on = false }
+      { start ; stop = (fun () -> ()); on_listeners; off_listeners; uid = 0 }
     ;;
 
-    let add_off_listener t f =
-      let key = t.uid in
-      t.uid <- t.uid + 1;
-      Inttbl.add t.off_listeners ~key ~data:f;
-      key
-    ;;
-
+(*
     let add_on_listener t f =
       let key = t.uid in
       t.uid <- t.uid + 1;
       Inttbl.add t.on_listeners ~key ~data:f;
+      if Inttbl.length t.on_listeners = 1 then start t;
       key
     ;;
+*)
 
     let turn_on key t =
       match Inttbl.find t.off_listeners key with
@@ -115,6 +118,18 @@ module Stream = struct
           Inttbl.remove t.on_listeners key;
           if Inttbl.length t.on_listeners = 0 then stop t;
         end
+
+    let add_off_listener t f =
+      let key = t.uid in
+      t.uid <- t.uid + 1;
+      Inttbl.add t.off_listeners ~key ~data:f;
+      key
+    ;;
+
+    let add_on_listener t f =
+      let key = add_off_listener t f in
+      turn_on key t;
+      key
   end
 (*
   type 'a t =
@@ -136,8 +151,27 @@ module Stream = struct
     { mutable uid   : int
     ; on_listeners  : ('a -> unit) Inttbl.t
     ; off_listeners : ('a -> unit) Inttbl.t
-    ; parent        
+    ; parents       : (int * ext) array
     }
+  and 'a t =
+    | Prim of 'a Prim.t
+    | Derived of 'a derived
+  and ext = In : 'a t -> ext
+
+  let rec turn_on_derived : 'a. int -> 'a derived -> unit = fun key t ->
+    match Inttbl.find t.off_listeners key with
+    | None -> failwith "Stream.turn_on_derived: listener was not off";
+    | Some f ->
+      begin
+        Inttbl.add t.on_listeners ~key ~data:f;
+        Inttbl.remove t.off_listeners key;
+        if Inttbl.length t.on_listeners = 1
+        then Array.iter t.parents ~f:(fun (k, In p) -> turn_on k p)
+      end
+  and turn_on : 'a. int -> 'a t -> unit = fun key t -> match t with
+    | Prim p -> Prim.turn_on key p
+    | Derived d -> turn_on_derived key d
+  ;;
 
   let add_listener t f =
     let key = t.uid in

@@ -1,21 +1,5 @@
 open Core
 
-(*
-module Future = struct
-  type 'a t = { f : 'b. ('a -> 'b) -> 'b }
-
-  let return x = { f = fun k -> k x }
-
-  type 'a stream = Cons ('a * 'a stream t)
-
-  let clicks (elt : Jq.t) : 'a stream t =
-    let f k = k (Cons ()
-      Jq.on "click" elt (fun e ->
-      )
-end
-
-*)
-
 module Subscription : sig
   type t
 
@@ -78,30 +62,19 @@ module Stream = struct
       t.stop <- stop'
     ;;
 
-    let ticks ms =
+    let on_interval ms ~f =
       let on_listeners  = Inttbl.create () in
       let off_listeners = Inttbl.create () in
       let start () =
         let interval = set_interval ms ~f:(fun () ->
-          notify on_listeners (Time.now ())) in
+          notify on_listeners (f (Time.now ()))) in
         fun () -> clear_interval interval
       in
       { start ; stop = (fun () -> ()); on_listeners; off_listeners; uid = 0 }
-    ;;
-
-(*
-    let add_on_listener t f =
-      let key = t.uid in
-      t.uid <- t.uid + 1;
-      Inttbl.add t.on_listeners ~key ~data:f;
-      if Inttbl.length t.on_listeners = 1 then start t;
-      key
-    ;;
-*)
 
     let turn_on key t =
       match Inttbl.find t.off_listeners key with
-      | None   -> failwith "Stream.Prim.turn_on: listener was not off"
+      | None   -> failwith "Stream.Prim.turn_on: Listener was not off"
       | Some f ->
         begin
           Inttbl.add t.on_listeners ~key ~data:f;
@@ -111,7 +84,7 @@ module Stream = struct
 
     let turn_off key t =
       match Inttbl.find t.on_listeners key with
-      | None   -> failwith "Stream.Prim.turn_off: listener was not on"
+      | None   -> failwith "Stream.Prim.turn_off: Listener was not on"
       | Some f ->
         begin
           Inttbl.add t.off_listeners ~key ~data:f;
@@ -131,27 +104,15 @@ module Stream = struct
       turn_on key t;
       key
   end
-(*
-  type 'a t =
-    { listeners    : ('a -> unit) Inttbl.t
-     (* the more accurate type for listeners is
-      * (exists 'b. ('a -> 'b) t) Inttbl.t *)
-    ; side_effects : ('a -> unit) Inttbl.t
-    (* could do something like
-     * notify_parent      : (unit -> unit) *)
-    ; parent      : ext option
-(*     ; mutable on  : bool *)
-    ; mutable uid : int
-    }
-  and ext =
-    | In : 'a t -> ext
-    *)
+
 
   (* Almost every feature of the OCaml type system
    * (with the exception of polymorphic variants)
    * can be seen here *)
   type 'a derived =
     { mutable uid   : int
+    (* TODO: Consider just having one Inttbl with a tag for whether
+     * a listener is on or off *)
     ; on_listeners  : ('a -> unit) Inttbl.t
     ; off_listeners : ('a -> unit) Inttbl.t
     ; parents       : (int * ext) array
@@ -163,7 +124,7 @@ module Stream = struct
 
   let rec turn_on_derived : 'a. int -> 'a derived -> unit = fun key t ->
     match Inttbl.find t.off_listeners key with
-    | None -> failwith "Stream.turn_on_derived: listener was not off";
+    | None -> failwith "Stream.turn_on_derived: Listener was not off";
     | Some f ->
       begin
         Inttbl.add t.on_listeners ~key ~data:f;
@@ -176,10 +137,24 @@ module Stream = struct
     | Derived d -> turn_on_derived key d
   ;;
 
+  let rec turn_off_derived : 'a. int -> 'a derived -> unit = fun key t ->
+    match Inttbl.find t.on_listeners key with
+    | None -> failwith "Stream.turn_off_derived: Listener was not on"
+    | Some f ->
+      begin
+        Inttbl.add t.off_listeners ~key ~data:f;
+        Inttbl.remove t.on_listeners key;
+        if Inttbl.length t.on_listeners = 0
+        then Array.iter t.parents ~f:(fun (k, In p) -> turn_off k p);
+      end
+  and turn_off : 'a. int -> 'a t -> unit = fun key t -> match t with
+    | Prim p -> Prim.turn_off key p
+    | Derived d -> turn_off_derived key d
+
   let add_off_listener =
     let add_off_listener_derived t f =
-      let key - t.uid in
-      t.uid <- t.uid <- 1;
+      let key = t.uid in
+      t.uid <- t.uid + 1;
       Inttbl.add t.off_listeners ~key ~data:f;
       key
     in
@@ -188,201 +163,185 @@ module Stream = struct
     | Derived d -> add_off_listener_derived d f
   ;;
 
-  let map t ~f =
-    let on_listeners = Inttbl.create () in
-    let on_update x =
-      Inttbl.iter ~f:(fun ~key:_ ~data -> data (f x))
-    in
-    let key = add_off_listener t on_update in
+  let add_on_listener t f =
+    let key = add_off_listener t f in
+    turn_on key t;    
+    key
+  ;;
+
+  let never () =
+    Derived 
+    { uid = 0; parents = [||]
+    ; on_listeners = Inttbl.create (); off_listeners = Inttbl.create ()
+    }
+
+  let trigger tbl x = Inttbl.iter tbl ~f:(fun ~key:_ ~data -> data x)
+
+  let create parent ~update ~on_listeners =
+    let key = add_off_listener parent update in
+    Derived
     { uid = 0
-    ; parents = [| key, t |]
+    ; parents = [| key, In parent |]
     ; on_listeners
     ; off_listeners = Inttbl.create ()
     }
+
+  let map t ~f =
+    let on_listeners = Inttbl.create () in
+    let update x = trigger on_listeners (f x) in
+    create t ~update ~on_listeners
+  ;;
 
   let iter t ~f =
     let key = add_on_listener t f in
     Subscription.make (fun () -> turn_off key t)
 
-  let add_listener t f =
-    let key = t.uid in
-    t.uid <- key + 1;
-    Inttbl.add t.listeners ~key ~data:f;
-    Subscription.make (fun () -> Inttbl.remove t.listeners key)
-  ;;
-
-  let iter' t ~f =
-    let key = t.uid in
-    t.uid <- key + 1;
-    Inttbl.add t.listeners ~key ~data:f;
-    Subscription.make (fun () -> Inttbl.remove t.listeners key)
-  ;;
-
-  let trigger t x =
-    if t.on then
-      Inttbl.iter t.listeners ~f:(fun ~key:_ ~data ->
-        data x)
-  ;;
-
-  let create () =
-    { on        = false
-    ; uid       = 0
-    ; listeners = Inttbl.create ()
-    ; parent    = None
-    }
-
-(*
-  let skip_duplicates' t =
-    let t' = create () in
-    let prev = ref None in
-    ignore (iter t ~f:(fun x ->
-      if Some x <> !prev
-      then begin
-        prev := Some x;
-        trigger t' x
-      end
-    ));
-    t'
-*)
-
   let skip_duplicates ?(eq=(=)) t =
-    let t'   = create () in
-    let prev = ref None  in
-    ignore (add_listener t (fun x ->
+    let on_listeners = Inttbl.create () in
+    let prev = ref None in
+    let update x =
       let is_new = match !prev with
-        | None   -> true
+        | None -> true
         | Some y -> not (eq x y)
       in
       if is_new
       then begin
         prev := Some x;
-        trigger t' x
+        trigger on_listeners x
       end
-    ));
-    t'
-
-  let map t ~f =
-    let t' = create () in
-    ignore (add_listener t (fun x -> trigger t' (f x)));
-    t'
-  ;;
+    in
+    create t ~update ~on_listeners
 
   let filter t ~f =
-    let t' = create () in
-    ignore (add_listener t (fun x -> if f x then trigger t' x));
-    t'
-  ;;
+    let on_listeners = Inttbl.create () in
+    let update x =
+      if f x then trigger on_listeners x
+    in
+    create t ~update ~on_listeners
 
+  (* Should trigger initial value *)
   let fold t ~init ~f =
-    let t' = create () in
+    let on_listeners = Inttbl.create () in
     let last = ref init in
-    trigger t' init;
-    ignore (
-      add_listener t (fun x ->
-        let y = f !last x in
-        last := y;
-        trigger t' y
-      )
-    );
-    t'
-  ;;
+    let update x =
+      let y = f !last x in
+      last := y;
+      trigger on_listeners y
+    in
+    create t ~update ~on_listeners
 
+  (* TODO: Consider switching to a new listener after [n] events if
+   * this is too inefficient *)
   let drop t n =
+    let on_listeners = Inttbl.create () in
     let seen = ref 0 in
-    let t'   = create () in
-    ignore (add_listener t (fun x -> if !seen >= n then trigger t' x else incr seen));
-    t'
-  ;;
+    let update x =
+      if !seen >= n then trigger on_listeners x else incr seen
+    in
+    create t ~update ~on_listeners
 
   let tail t = drop t 1
 
   let zip_with t1 t2 ~f =
-    let t               = create () in
+    let on_listeners = Inttbl.create () in
     let on_value q q' g = fun x ->
       match Queue.dequeue q' with
-      | None   -> Queue.enqueue q x
-      | Some y -> trigger t (g x y)
+      | None -> Queue.enqueue q x
+      | Some y -> trigger on_listeners (g x y)
     in
-
     let q1, q2 = Queue.create (), Queue.create () in
-    ignore (add_listener t1 (on_value q1 q2 f));
-    ignore (add_listener t2 (on_value q2 q1 (fun x y -> f y x)));
-    t
-  ;;
+    let key1 = add_off_listener t1 (on_value q1 q2 f) in
+    let key2 = add_off_listener t2 (on_value q2 q1 (fun x y -> f y x)) in
+    Derived
+    { uid = 0
+    ; on_listeners
+    ; off_listeners = Inttbl.create ()
+    ; parents = [| (key1, In t1); (key2, In t2) |]
+    }
 
-  let ap (tf : ('a -> 'b) t) (tx : 'a t) : 'b t = zip_with tf tx ~f:(fun f x -> f x)
+  let ap tf tx = zip_with tf tx ~f:(fun f x -> f x)
 
   let zip = zip_with ~f:(fun x y -> (x, y))
 
   let merge t1 t2 =
-    let t = create () in
-    ignore (add_listener t1 (fun x -> trigger t x));
-    ignore (add_listener t2 (fun x -> trigger t x));
-    t
-  ;;
+    let on_listeners = Inttbl.create () in
+    let update x = trigger on_listeners x in
+    let key1 = add_off_listener t1 update in
+    let key2 = add_off_listener t2 update in
+    Derived
+    { uid = 0
+    ; on_listeners
+    ; off_listeners = Inttbl.create ()
+    ; parents = [| (key1, In t1); (key2, In t2) |]
+    }
 
   let join t =
-    let t' = create () in
-    ignore (
-      add_listener t (fun s ->
-        ignore (add_listener s (fun x -> trigger t' x))
-      )
-    );
-    t'
-  ;;
-
+    let on_listeners = Inttbl.create () in
+    let parents      = [||] in
+    let update s =
+      let key = add_off_listener s (trigger on_listeners) in
+      Array.push (key, In s) parents 
+    in
+    let key = add_off_listener t update in
+    Derived
+    { uid = 0
+    ; on_listeners
+    ; off_listeners = Inttbl.create ()
+    ; parents
+    }
+    
   let switch t =
-    let t'   = create () in
-    let last = ref None in
-    ignore (
-      add_listener t (fun s ->
-        Option.iter !last ~f:(fun sub -> Subscription.cancel sub);
-        last := Some (add_listener s (fun x -> trigger t' x))
-      )
-    );
-    t'
-  ;;
+    let on_listeners = Inttbl.create () in
+    let prev = ref None in
+    let parents = [||] in
+    let update s =
+      Option.iter !prev ~f:(fun (k, s') -> turn_off k s');
+      let key = add_off_listener s (trigger on_listeners) in
+      prev := Some (key, s);
+      Array.unsafe_set parents 1 (key, s)
+    in
+    let key = add_off_listener t update in
+    Array.push (key, In t) parents;
+    Derived
+    { uid = 0
+    ; on_listeners
+    ; off_listeners = Inttbl.create ()
+    ; parents
+    }
 
   let bind t ~f = join (map t ~f)
 
-  let ticks ms =
-    let t      = create () in
-    set_interval ms ~f:(fun () -> trigger t (Time.now ()));
-    t
-  ;;
-
-  let elapsed ms =
-    let t = create () in
-    let start = Time.now () in
-    set_interval ms ~f:(fun () ->
-      trigger t Time.(now () - start)
-    );
-    t
-
   let delta t ~f =
-    let t'   = create () in
+    let on_listeners = Inttbl.create () in
     let last = ref None in
-    add_listener t (fun x ->
-      Option.iter !last ~f:(fun v -> trigger t' (f v x));
+    let update x =
+      Option.iter !last ~f:(fun v -> trigger on_listeners (f v x));
       last := Some x
-    ) |> ignore;
-    t'
-  ;;
+    in
+    create t ~update ~on_listeners
+
+  let ticks ms = Prim (Prim.on_interval ms ~f:(fun x -> x))
+
+  let elapsed ms = 
+    let t0 = Time.now () in
+    Prim (Prim.on_interval ms ~f:(fun t -> Time.(t - t0)))
+
 
   let deltas ms = delta (ticks ms) (fun t1 t2 -> Time.(t2 - t1))
 
   let sequence ts =
-    let t   = create () in
+    let on_listeners = Inttbl.create () in
     let buf = Array.init (Array.length ts) ~f:(fun _ -> Queue.create ()) in
-    Array.iteri ts ~f:(fun i x ->
-      add_listener x (fun v ->
-        Queue.enqueue buf.(i) v;
+    let parents = Array.mapi ts ~f:(fun i t ->
+      let key = add_off_listener t (fun x ->
+        Queue.enqueue buf.(i) x;
         if Array.for_all buf ~f:(fun q -> Option.is_some (Queue.peek q))
-        then trigger t (Array.map buf ~f:Queue.dequeue_exn)
-      ) |> ignore
-    );
-    t
-  ;;
+        then trigger on_listeners (Array.map buf ~f:Queue.dequeue_exn))
+      in
+      (key, In t))
+    in
+    Derived
+    { uid = 0; on_listeners; off_listeners = Inttbl.create (); parents }
 
   module Infix = struct
     let (>>=) t f = bind t ~f
@@ -396,9 +355,9 @@ module Stream = struct
 end
 
 module Behavior = struct
-  type 'a t =
-    { mutable listeners : ('a -> unit) list
-    ; mutable value     : 'a
+  type 'a t = 
+    { s             : 'a Stream.t
+    ; mutable value : 'a
     }
 
   (*
@@ -423,12 +382,10 @@ module Behavior = struct
     notify_listeners t
   ;;
 
-  let trigger t x =
-    t.value <- x;
-    notify_listeners t
-  ;;
+  let return init = { value = init ; s = Stream.never () }
 
-  let return init = { value = init ; listeners = [] }
+  let skip_duplicates ?eq {value; s} =
+    { value ; s = Stream.skip_duplicates ?eq s }
 
   let skip_duplicates ?(eq=(=)) t =
     let t' = return t.value in
@@ -476,6 +433,8 @@ module Behavior = struct
     );
     t
   ;;
+
+  let changes {s; _} = s
 
   let changes t =
     let s = Stream.create () in

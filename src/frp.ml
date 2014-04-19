@@ -147,6 +147,9 @@ module Stream = struct
     | In : 'a t -> ext
     *)
 
+  (* Almost every feature of the OCaml type system
+   * (with the exception of polymorphic variants)
+   * can be seen here *)
   type 'a derived =
     { mutable uid   : int
     ; on_listeners  : ('a -> unit) Inttbl.t
@@ -173,6 +176,34 @@ module Stream = struct
     | Derived d -> turn_on_derived key d
   ;;
 
+  let add_off_listener =
+    let add_off_listener_derived t f =
+      let key - t.uid in
+      t.uid <- t.uid <- 1;
+      Inttbl.add t.off_listeners ~key ~data:f;
+      key
+    in
+    fun t f -> match t with
+    | Prim p -> Prim.add_off_listener p f
+    | Derived d -> add_off_listener_derived d f
+  ;;
+
+  let map t ~f =
+    let on_listeners = Inttbl.create () in
+    let on_update x =
+      Inttbl.iter ~f:(fun ~key:_ ~data -> data (f x))
+    in
+    let key = add_off_listener t on_update in
+    { uid = 0
+    ; parents = [| key, t |]
+    ; on_listeners
+    ; off_listeners = Inttbl.create ()
+    }
+
+  let iter t ~f =
+    let key = add_on_listener t f in
+    Subscription.make (fun () -> turn_off key t)
+
   let add_listener t f =
     let key = t.uid in
     t.uid <- key + 1;
@@ -191,11 +222,6 @@ module Stream = struct
     if t.on then
       Inttbl.iter t.listeners ~f:(fun ~key:_ ~data ->
         data x)
-  ;;
-
-  let rec turn_on : 'a. 'a t -> unit = fun t ->
-    t.on <- true;
-    Option.iter t.parent ~f:(fun (In p) -> turn_on p)
   ;;
 
   let create () =

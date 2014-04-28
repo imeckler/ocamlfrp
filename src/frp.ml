@@ -74,23 +74,50 @@ module Stream = struct
       }
 
     let turn_on key t =
+      let go tbl f =
+        Inttbl.add t.on_listeners ~key ~data:f;
+        Inttbl.remove tbl key;
+        if Inttbl.length t.on_listeners = 1 then start t
+      in
       match Inttbl.find t.off_listeners key with
-      | None   -> failwith "Stream.Prim.turn_on: Listener was not off"
-      | Some f ->
-        begin
-          Inttbl.add t.on_listeners ~key ~data:f;
-          Inttbl.remove t.off_listeners key;
-          if Inttbl.length t.on_listeners = 1 then start t;
+      | Some f -> go t.off_listeners f
+      | None ->
+        begin match Inttbl.find t.passive_listeners key with
+        | Some f -> go t.passive_listeners f
+        | None -> failwith "Stream.Prim.turn_on: Listener was not off or passive"
         end
 
     let turn_off key t =
+      let go tbl f =
+        Inttbl.add t.off_listeners ~key ~data:f;
+        Inttbl.remove tbl key;
+      in
       match Inttbl.find t.on_listeners key with
-      | None   -> failwith "Stream.Prim.turn_off: Listener was not on"
       | Some f ->
         begin
-          Inttbl.add t.off_listeners ~key ~data:f;
-          Inttbl.remove t.on_listeners key;
+          go t.on_listeners f;
           if Inttbl.length t.on_listeners = 0 then stop t;
+        end
+      | None ->
+        begin match Inttbl.find t.passive_listeners key with
+        | Some f -> go t.passive_listeners f
+        | None -> failwith "Stream.Prim.turn_off: Listener was not on or passive"
+        end
+
+    let turn_passive key t =
+      let go tbl f =
+        Inttbl.add t.passive_listeners ~key ~data:f;
+        Inttbl.remove tbl key
+      in
+      match Inttbl.find t.on_listeners key with
+      | Some f -> begin
+          go t.on_listeners f;
+          if Inttbl.length t.on_listeners = 0 then stop t;
+        end
+      | None ->
+        begin match Inttbl.find t.off_listeners key with
+        | Some f -> go t.off_listeners f
+        | None -> failwith "Stream.Prim.turn_passive: Listener was not on or off"
         end
 
     let add_off_listener t f =
@@ -129,6 +156,9 @@ module Stream = struct
     | Derived of 'a derived
   and ext = In : 'a t -> ext
 
+  (* TODO: Refactor this out into a functor since turn_(on|off|passive)
+   * are the same for derived and prim *)
+  (* TODO: Come back and fix this for passive *)
   let rec turn_on_derived : 'a. int -> 'a derived -> unit = fun key t ->
     match Inttbl.find t.off_listeners key with
     | None -> failwith "Stream.turn_on_derived: Listener was not off";
@@ -297,10 +327,10 @@ module Stream = struct
     let on_listeners = Inttbl.create () in
     let passive_listeners = Inttbl.create () in
     let ls = [|on_listeners; passive_listeners|] in
-    let parents      = [||] in
+    let parents = [||] in (* Only safe in js_of_ocaml *)
     let update s =
       let key = add_off_listener s (notify_all ls)
-      in Array.push (key, In s) parents 
+      in Array.push (key, In s) parents
     in
     let key = add_off_listener t update in
     Derived
@@ -385,6 +415,7 @@ module Behavior = struct
   type 'a t = 
     { s     : 'a Stream.t
     ; value : 'a ref
+    ; key   : int option
     }
 
   let activate {s; key; value} =
@@ -395,82 +426,79 @@ module Behavior = struct
 
   let set t x = t.value := x
 
-  let peek t = !t.value
+  let peek t = !(t.value)
 
-  let return init = { value = init ; s = Stream.never () }
+  let return init = { value = ref init ; s = Stream.never () ; key = None }
 
-  let skip_duplicates ?eq {value; s} =
-    let s'     = Stream.skip_duplicates ?eq s in
-    let value' = ref !value in
-    let key'   = Stream.add_passive_listener s' (fun x -> value' := x) in
-    { value = value' ; s = Stream.skip_duplicates ?eq s ; key = Some key' }
+  let create value s =
+    let k = Stream.add_passive_listener s (fun x -> value := x) in
+    { value ; s ; key = Some k }
 
-  let map {s; key; value} ~f =
-    let value' = ref (f !value) in
-    let s'    = Stream.map s ~f in
-    let key'  = Stream.add_passive_listener s' (fun x -> value' := x) in
-    { value = value'; s = s'; key = Some key' }
-  ;;
+  let skip_duplicates ?eq {value; s; _} =
+    let s' = Stream.skip_duplicates ?eq s in
+    create (ref !value) s'
+
+  let map {s; value; _} ~f =
+    let s' = Stream.map s ~f in
+    create (ref (f !value)) s'
 
   let zip_with t1 t2 ~f =
-    let value = ref (f !(t1.value) !(t2.value)) in
     let s =
-      let on_listeners = Inttbl.create () in
+      let on_listeners      = Inttbl.create () in
       let passive_listeners = Inttbl.create () in
-      let key1 = Stream.add_passive_listener t1.s (fun x ->
-        let z = f x !(t2.value) in
-        value := z;
-        Stream.notify_all [|on_listeners; passive_listeners|] z) in
-      let key2 = Stream.add_passive_listener t2.s (fun y ->
-        let z = f !(t1.value) y in
-        value := z;
-        Stream.notify_all [|on_listeners; passive_listeners|] z)
+      let key1 = Stream.add_off_listener t1.s (fun x ->
+        Stream.notify_all [|on_listeners; passive_listeners|]
+          (f x !(t2.value))) in
+      let key2 = Stream.add_off_listener t2.s (fun y ->
+        Stream.notify_all [|on_listeners; passive_listeners|]
+          (f !(t1.value) y))
       in
-      Stream.(Derived 
-      { uid = 0; on_listeners; passive_listeners; off_listeners = Inttbl.create ()
+      Stream.(Derived
+      { uid = 0
+      ; on_listeners
+      ; passive_listeners
+      ; off_listeners = Inttbl.create ()
       ; parents = [|(key1, In t1.s); (key2, In t2.s)|]
       })
     in
-    { s; value}
+    create (ref (f !(t1.value) !(t2.value))) s
   ;;
 
   let zip_many ts ~f =
-    let t' = return (f (Array.map ~f:peek ts)) in
-    Array.iter ts ~f:(fun t ->
-      add_listener t (fun _ -> trigger t' (f (Array.map ~f:peek ts)))
-    );
-    t'
-  ;;
+    let s =
+      let on_listeners      = Inttbl.create () in
+      let passive_listeners = Inttbl.create () in
+      let parents =
+        Array.map ts ~f:(fun t ->
+          let key = Stream.add_off_listener t.s (fun x ->
+            Stream.notify_all [|on_listeners; passive_listeners|]
+              (f (Array.map ~f:peek ts)))
+          in (key, Stream.In t.s))
+      in
+      Stream.(Derived
+      { uid = 0
+      ; on_listeners
+      ; passive_listeners
+      ; off_listeners = Inttbl.create ()
+      ; parents
+      })
+    in
+    create (ref (f (Array.map ~f:peek ts))) s
 
   let ap tf tx = zip_with tf tx ~f:(fun f x -> f x)
 
   let zip = zip_with ~f:(fun x y -> (x, y))
 
-  let join t =
-    let t' = return t.value.value in
-    add_listener t.value (fun x -> trigger t' x);
-    add_listener t (fun s ->
-      add_listener s (fun x -> trigger t' x)
-    );
-    t'
-  ;;
+  (* TODO: This may be incorrect, but I'm fairly confident it
+   * is correct *)
+  let join {value; s; _} =
+    let s' = Stream.(join (map ~f:(fun t -> t.s) s)) in
+    let value' = ref !((!value).value) in
+    create value' s'
 
-  let sequence ts =
-    let t = return (Array.map ts ~f:(fun t -> t.value)) in
-    Array.iteri ts ~f:(fun i x ->
-      add_listener x (fun v -> t.value.(i) <- v; notify_listeners t)
-    );
-    t
-  ;;
+  let sequence ts = zip_many ts ~f:(fun a -> a)
 
   let changes {s; _} = s
-
-  let changes t =
-    let s = Stream.create () in
-    Stream.trigger s t.value;
-    add_listener t (Stream.trigger s);
-    s
-  ;;
 
   let bind t ~f = join (map t ~f)
 
@@ -483,20 +511,28 @@ module Behavior = struct
 end
 
 let when_ cond s =
-  let s' = Stream.create () in
-  ignore (Stream.iter s ~f:(fun x -> if cond.Behavior.value then Stream.trigger s' x));
-  s'
-;;
+  (* If [when_ cond s] gets an on listener, then
+    * [cond.s] and [s] should both get on listeners *)
+  let on_listeners = Inttbl.create () in
+  let passive_listeners = Inttbl.create () in
+  (* TODO: This is a bit tricky...another potential error *)
+  let open Stream in
+  let key1 = add_off_listener s (fun x ->
+    if !(cond.Behavior.value) then notify_all [|on_listeners; passive_listeners|] x)
+  in
+  let key2 = add_off_listener cond.Behavior.s (fun x -> ()) in (* dummy listener *)
+  Derived
+  { uid = 0
+  ; on_listeners
+  ; passive_listeners
+  ; off_listeners = Inttbl.create ()
+  ; parents = [|(key1, In cond.Behavior.s); (key2, In s)|]
+  }
 
 let scan s ~init ~f =
-  let b = Behavior.return init in
-  ignore (
-    Stream.iter s ~f:(fun x ->
-      Behavior.trigger b (f (Behavior.peek b) x)
-    )
-  );
-  b
-;;
+  let value = ref init in
+  let s' = Stream.fold s ~init ~f in
+  Behavior.create value s'
 
 let project b s         = Stream.map s ~f:(fun _ -> b.Behavior.value)
 let project_with b s ~f = Stream.map s ~f:(fun x -> f b.Behavior.value x)

@@ -15,37 +15,33 @@ module Subscription : sig
 end
 
 module Stream : sig
-  type ('b, 'a) t
+  type 'a t
 
-  type 'a td = ([`derived], 'a) t
+  val map : 'a t -> f:('a -> 'b) -> 'a t
 
-(*   val set : 'a t -> 'a -> unit *)
+  val iter : 'a t -> f:('a -> unit) -> Subscription.t
 
-  val map : ('c, 'a) t -> f:('a -> 'b) -> 'a td
+  val filter : 'a t -> f:('a -> bool) -> 'a t
 
-  val iter : ('c, 'a) t -> f:('a -> unit) -> Subscription.t
+  val fold : 'a t -> init:'accum -> f:('accum -> 'a -> 'accum) -> 'accum t
 
-  val filter : ('c, 'a) t -> f:('a -> bool) -> 'a td
+  val ap : ('a -> 'b) t -> 'a t -> 'b t
 
-  val fold : ('c, 'a) t -> init:'accum -> f:('accum -> 'a -> 'accum) -> 'accum td
+  val zip_with : 'a t -> 'b t -> f:('a -> 'b -> 'c) -> 'c t
 
-  val ap : ('c, ('a -> 'b)) t -> ('d, 'a) t -> 'b td
+  val zip : 'a t -> 'b t -> ('a * 'b) t
 
-  val zip_with : 'a t -> 'b t -> f:('a -> 'b -> 'c) -> 'c td
+  val merge : 'a t -> 'a t -> 'a t
 
-  val zip : 'a t -> 'b t -> ('a * 'b) td
-
-  val merge : 'a t -> 'a t -> 'a td
-
-  val drop : 'a t -> int -> 'a td
+  val drop : 'a t -> int -> 'a t
   
-  val tail : 'a t -> 'a td
+  val tail : 'a t -> 'a t
 
-  val join : 'a t t -> 'a td
+  val join : 'a t t -> 'a t
 
-  val switch : 'a t t -> 'a td
+  val switch : 'a t t -> 'a t
 
-  val bind : 'a t -> f:('a -> 'b t) -> 'b td
+  val bind : 'a t -> f:('a -> 'b t) -> 'b t
 
   val ticks : float -> Time.t t
 

@@ -45,12 +45,17 @@ module Stream = struct
       ; mutable uid       : int
       }
 
-    let create ?(start=(fun () () -> ())) () =
-      { start
+    let create ?(start=(fun _ () -> ())) () =
+      let on_listeners      = Inttbl.create () in
+      let passive_listeners = Inttbl.create () in
+      let trigger x         =
+        notify_all [| on_listeners; passive_listeners |] x
+      in
+      { on_listeners
+      ; passive_listeners
+      ; start = (fun () -> start trigger)
       ; stop              = (fun () -> ())
-      ; on_listeners      = Inttbl.create ()
       ; off_listeners     = Inttbl.create ()
-      ; passive_listeners = Inttbl.create ()
       ; uid               = 0
       }
 
@@ -64,13 +69,16 @@ module Stream = struct
 
     let on_interval ms ~f =
       let on_listeners  = Inttbl.create () in
+      let passive_listeners = Inttbl.create () in
       let start () =
         let interval = set_interval ms ~f:(fun () ->
-          notify on_listeners (f (Time.now ()))) in
+          notify_all [| on_listeners; passive_listeners |] (f (Time.now ()))) in
         fun () -> clear_interval interval
       in
-      { start; stop = (fun () -> ()); uid = 0; on_listeners
-      ; off_listeners = Inttbl.create (); passive_listeners = Inttbl.create ()
+      { start; stop = (fun () -> ()); uid = 0
+      ; on_listeners
+      ; passive_listeners
+      ; off_listeners = Inttbl.create (); 
       }
 
     let turn_on key t =
@@ -156,6 +164,8 @@ module Stream = struct
     | Derived of 'a derived
   and ext = In : 'a t -> ext
 
+  let create ?start () = Prim (Prim.create ?start ())
+
   (* TODO: Refactor this out into a functor since turn_(on|off|passive)
    * are the same for derived and prim *)
   (* TODO: Come back and fix this for passive *)
@@ -218,7 +228,10 @@ module Stream = struct
     ; passive_listeners = Inttbl.create ()
     }
 
-  let create parent ~update =
+(*   let create_with (parent : 'a t) ~(update : ('a -> unit) -> 'a -> unit) : 'b t = *)
+(* TODO: This is an example of a good program that can't be given a sensible type *)
+  let create_with : 'a 'b. 'a t -> update:(('a -> unit) -> 'a -> unit) -> 'b t =
+    fun parent ~update ->
     let on_listeners = Inttbl.create () in
     let passive_listeners = Inttbl.create () in
     let trigger x =
@@ -237,7 +250,7 @@ module Stream = struct
 
   let map t ~f =
     let update trigger x = trigger (f x) in
-    create t ~update
+    create_with t ~update
   ;;
 
   let iter t ~f =
@@ -257,13 +270,13 @@ module Stream = struct
         trigger x
       end
     in
-    create t ~update
+    create_with t ~update
 
   let filter t ~f =
     let update trigger x =
       if f x then trigger x
     in
-    create t ~update
+    create_with t ~update
 
   (* Should trigger initial value *)
   let fold t ~init ~f =
@@ -273,7 +286,7 @@ module Stream = struct
       last := y;
       trigger y
     in
-    create t ~update
+    create_with t ~update
 
   (* TODO: Consider switching to a new listener after [n] events if
    * this is too inefficient *)
@@ -282,7 +295,7 @@ module Stream = struct
     let update trigger x =
       if !seen >= n then trigger x else incr seen
     in
-    create t ~update
+    create_with t ~update
 
   let tail t = drop t 1
 
@@ -366,13 +379,16 @@ module Stream = struct
 
   let bind t ~f = join (map t ~f)
 
-  let delta t ~f =
+(*   let delta (t : 'a t) ~(f : 'a -> 'a -> 'b) : 'b t = *)
+
+  let delta : 'a 'b. 'a t -> f:('a -> 'a -> 'b) -> 'b t =
+    fun t ~f ->
     let last = ref None in
     let update trigger x =
       Option.iter !last ~f:(fun v -> trigger (f v x));
       last := Some x
     in
-    create t ~update
+    create_with t ~update
 
   let ticks ms = Prim (Prim.on_interval ms ~f:(fun x -> x))
 
@@ -380,7 +396,7 @@ module Stream = struct
     let t0 = Time.now () in
     Prim (Prim.on_interval ms ~f:(fun t -> Time.(t - t0)))
 
-  let deltas ms = delta (ticks ms) (fun t1 t2 -> Time.(t2 - t1))
+  let deltas ms : Time.Span.t t = delta (ticks ms) ~f:(fun t1 t2 -> Time.(t2 - t1))
 
   let sequence ts =
     let on_listeners = Inttbl.create () in

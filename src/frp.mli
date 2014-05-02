@@ -53,6 +53,9 @@ module Stream : sig
 
   val skip_duplicates : ?eq:('a -> 'a -> bool) -> 'a t -> 'a t
 
+  (* Let's see how this type does *)
+  val create : ?start:(('a -> unit) -> (unit -> unit)) -> 'a t
+
   module Infix : sig
     val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
 
@@ -63,11 +66,6 @@ module Stream : sig
     val (<*>) : ('a -> 'b) t -> 'a t -> 'b t
   end
 
-  val trigger : 'a t -> 'a -> unit
-
-  val create  : unit -> 'a t
-
-  val stop_updating : 'a t -> unit
 end
 
 module Behavior : sig

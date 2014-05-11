@@ -17,7 +17,9 @@ end
 module Stream : sig
   type 'a t
 
-  val map : 'a t -> f:('a -> 'b) -> 'a t
+  type 'a trigger = 'a -> unit
+
+  val map : 'a t -> f:('a -> 'b) -> 'b t
 
   val iter : 'a t -> f:('a -> unit) -> Subscription.t
 
@@ -54,7 +56,10 @@ module Stream : sig
   val skip_duplicates : ?eq:('a -> 'a -> bool) -> 'a t -> 'a t
 
   (* Let's see how this type does *)
-  val create : ?start:(('a -> unit) -> (unit -> unit)) -> 'a t
+
+  val create : ?start:('a trigger -> (unit -> unit)) -> unit -> 'a t
+
+  val create' : ?start:('a trigger -> (unit -> unit)) -> unit -> 'a t * 'a trigger
 
   module Infix : sig
     val (>>=) : 'a t -> ('a -> 'b t) -> 'b t
@@ -99,13 +104,12 @@ module Behavior : sig
     val (<*>) : ('a -> 'b) t -> 'a t -> 'b t
   end
 
+  val force_updates : 'a t -> unit
+  val stop_updates : 'a t -> unit 
+
   val set : 'a t -> 'a -> unit
 
-  val trigger : 'a t -> 'a -> unit
-
   val peek : 'a t -> 'a
-  
-  val notify_listeners : 'a t -> unit
 
   val changes : 'a t -> 'a Stream.t
 end
@@ -117,6 +121,8 @@ val when_ : bool Behavior.t -> 'a Stream.t -> 'a Stream.t
 (* val switch : 'a Behavior.t Stream.t -> 'a Behavior.t *)
 
 val scan : 'a Stream.t -> init:'accum -> f:('accum -> 'a -> 'accum) -> 'accum Behavior.t
+
+val latest : 'a Stream.t -> init:'a -> 'a Behavior.t
 
 val project : 'a Behavior.t -> 'b Stream.t -> 'a Stream.t
 

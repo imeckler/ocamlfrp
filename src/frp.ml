@@ -58,11 +58,14 @@ module Stream = struct
       ; off_listeners     = Inttbl.create ()
       ; uid               = 0
       }
+      , trigger
+    ;;
 
     let stop t = t.stop ()
 
     let start t =
-      stop t; (* TODO: This might be an error *)
+      (* stop t; TODO: This might be an error *)
+      println "Frp.Stream.Prim.start";
       let stop' = t.start () in
       t.stop <- stop'
     ;;
@@ -128,22 +131,23 @@ module Stream = struct
         | None -> failwith "Stream.Prim.turn_passive: Listener was not on or off"
         end
 
-    let add_off_listener t f =
+    let add_listener' tbl t f =
       let key = t.uid in
       t.uid <- t.uid + 1;
-      Inttbl.add t.off_listeners ~key ~data:f;
+      Inttbl.add tbl ~key ~data:f;
       key
     ;;
 
+    let add_off_listener t f = add_listener' t.off_listeners t f
+
+    let add_passive_listener t f = add_listener' t.passive_listeners t f
+
     let add_on_listener t f =
       let key = add_off_listener t f in
+      begin match Inttbl.find t.off_listeners key with
+      | None -> println "wtf"
+      | Some _ -> println "makes sense (derived)" end;
       turn_on key t;
-      key
-
-    let add_passive_listener t f =
-      let key = t.uid in
-      t.uid <- t.uid + 1;
-      Inttbl.add t.passive_listeners ~key ~data:f;
       key
   end
 
@@ -164,23 +168,36 @@ module Stream = struct
     | Derived of 'a derived
   and ext = In : 'a t -> ext
 
-  let create ?start () = Prim (Prim.create ?start ())
+  type 'a trigger = 'a -> unit
+
+  let create' ?start () = let (s, trigger) = Prim.create ?start () in
+    (Prim s, trigger)
+
+  let create ?start () = fst (create' ?start ())
 
   (* TODO: Refactor this out into a functor since turn_(on|off|passive)
    * are the same for derived and prim *)
-  (* TODO: Come back and fix this for passive *)
   let rec turn_on_derived : 'a. int -> 'a derived -> unit = fun key t ->
+    println "turn_on_derived";
+    println (Printf.sprintf "key is %d" key);
+    let go tbl f =
+      println "turn_on_derived.go";
+      Inttbl.add t.on_listeners ~key ~data:f;
+      Inttbl.remove tbl key;
+      println "Parents: ";
+      print t.parents;
+      if Inttbl.length t.on_listeners = 1
+      then Array.iter t.parents ~f:(fun (k, In p) -> println "recursing"; turn_on k p)
+    in
     match Inttbl.find t.off_listeners key with
-    | None -> failwith "Stream.turn_on_derived: Listener was not off";
-    | Some f ->
-      begin
-        Inttbl.add t.on_listeners ~key ~data:f;
-        Inttbl.remove t.off_listeners key;
-        if Inttbl.length t.on_listeners = 1
-        then Array.iter t.parents ~f:(fun (k, In p) -> turn_on k p)
+    | Some f -> go t.off_listeners f
+    | None -> 
+      begin match Inttbl.find t.passive_listeners key with
+      | Some f -> go t.passive_listeners f
+      | None -> failwith "Stream.turn_on_derived: Listener was not off or passive";
       end
-  and turn_on : 'a. int -> 'a t -> unit = fun key t -> match t with
-    | Prim p -> Prim.turn_on key p
+  and turn_on : 'a. int -> 'a t -> unit = fun key t -> println "Stream.turn_on"; match t with
+    | Prim p    -> Prim.turn_on key p
     | Derived d -> turn_on_derived key d
   ;;
 
@@ -202,21 +219,25 @@ module Stream = struct
     let key = t.uid in
     t.uid <- t.uid + 1;
     Inttbl.add tbl ~key ~data:f;
+    begin match Inttbl.find tbl key with
+    | None   -> println "wtf"
+    | Some _ -> println "makes sense (derived)" end;
     key
 
   let add_off_listener t f =
     match t with
-    | Prim p -> Prim.add_off_listener p f
+    | Prim p    -> Prim.add_off_listener p f
     | Derived d -> add_listener' d.off_listeners d f
   ;;
 
   let add_passive_listener t f =
     match t with
-    | Prim p -> Prim.add_passive_listener p f
+    | Prim p    -> Prim.add_passive_listener p f
     | Derived d -> add_listener' d.passive_listeners d f
 
   let add_on_listener t f =
     let key = add_off_listener t f in
+    println "Stream.add_on_listener";
     turn_on key t;
     key
   ;;
@@ -228,9 +249,7 @@ module Stream = struct
     ; passive_listeners = Inttbl.create ()
     }
 
-(*   let create_with (parent : 'a t) ~(update : ('a -> unit) -> 'a -> unit) : 'b t = *)
-(* TODO: This is an example of a good program that can't be given a sensible type *)
-  let create_with : 'a 'b. 'a t -> update:(('a -> unit) -> 'a -> unit) -> 'b t =
+  let create_with : 'a 'b. 'a t -> update:(('b -> unit) -> 'a -> unit) -> 'b t =
     fun parent ~update ->
     let on_listeners = Inttbl.create () in
     let passive_listeners = Inttbl.create () in
@@ -346,6 +365,7 @@ module Stream = struct
       in Array.push (key, In s) parents
     in
     let key = add_off_listener t update in
+    Array.push (key, In t) parents;
     Derived
     { uid = 0
     ; on_listeners
@@ -379,10 +399,7 @@ module Stream = struct
 
   let bind t ~f = join (map t ~f)
 
-(*   let delta (t : 'a t) ~(f : 'a -> 'a -> 'b) : 'b t = *)
-
-  let delta : 'a 'b. 'a t -> f:('a -> 'a -> 'b) -> 'b t =
-    fun t ~f ->
+  let delta t ~f =
     let last = ref None in
     let update trigger x =
       Option.iter !last ~f:(fun v -> trigger (f v x));
@@ -396,7 +413,7 @@ module Stream = struct
     let t0 = Time.now () in
     Prim (Prim.on_interval ms ~f:(fun t -> Time.(t - t0)))
 
-  let deltas ms : Time.Span.t t = delta (ticks ms) ~f:(fun t1 t2 -> Time.(t2 - t1))
+  let deltas ms = delta (ticks ms) ~f:(fun t1 t2 -> Time.(t2 - t1))
 
   let sequence ts =
     let on_listeners = Inttbl.create () in
@@ -434,10 +451,10 @@ module Behavior = struct
     ; key   : int option
     }
 
-  let activate {s; key; value} =
+  let force_updates {s; key; value} =
     Option.iter key ~f:(fun k -> Stream.turn_on k s)
 
-  let deactivate {s; key; value} =
+  let stop_updates {s; key; value} =
     Option.iter key ~f:(fun k -> Stream.turn_off k s)
 
   let set t x = t.value := x
@@ -537,6 +554,7 @@ let when_ cond s =
     if !(cond.Behavior.value) then notify_all [|on_listeners; passive_listeners|] x)
   in
   let key2 = add_off_listener cond.Behavior.s (fun x -> ()) in (* dummy listener *)
+  println "when_";
   Derived
   { uid = 0
   ; on_listeners
@@ -550,6 +568,8 @@ let scan s ~init ~f =
   let s' = Stream.fold s ~init ~f in
   Behavior.create value s'
 
-let project b s         = Stream.map s ~f:(fun _ -> b.Behavior.value)
-let project_with b s ~f = Stream.map s ~f:(fun x -> f b.Behavior.value x)
+let latest s ~init = scan s ~init ~f:(fun _ x -> x)
+
+let project b s         = Stream.map s ~f:(fun _ -> !(b.Behavior.value))
+let project_with b s ~f = Stream.map s ~f:(fun x -> f !(b.Behavior.value) x)
 

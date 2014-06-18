@@ -65,7 +65,6 @@ module Stream = struct
 
     let start t =
       (* stop t; TODO: This might be an error *)
-      println "Frp.Stream.Prim.start";
       let stop' = t.start () in
       t.stop <- stop'
     ;;
@@ -144,9 +143,6 @@ module Stream = struct
 
     let add_on_listener t f =
       let key = add_off_listener t f in
-      begin match Inttbl.find t.off_listeners key with
-      | None -> println "wtf"
-      | Some _ -> println "makes sense (derived)" end;
       turn_on key t;
       key
   end
@@ -178,16 +174,11 @@ module Stream = struct
   (* TODO: Refactor this out into a functor since turn_(on|off|passive)
    * are the same for derived and prim *)
   let rec turn_on_derived : 'a. int -> 'a derived -> unit = fun key t ->
-    println "turn_on_derived";
-    println (Printf.sprintf "key is %d" key);
     let go tbl f =
-      println "turn_on_derived.go";
       Inttbl.add t.on_listeners ~key ~data:f;
       Inttbl.remove tbl key;
-      println "Parents: ";
-      print t.parents;
       if Inttbl.length t.on_listeners = 1
-      then Array.iter t.parents ~f:(fun (k, In p) -> println "recursing"; turn_on k p)
+      then Array.iter t.parents ~f:(fun (k, In p) -> turn_on k p)
     in
     match Inttbl.find t.off_listeners key with
     | Some f -> go t.off_listeners f
@@ -196,7 +187,7 @@ module Stream = struct
       | Some f -> go t.passive_listeners f
       | None -> failwith "Stream.turn_on_derived: Listener was not off or passive";
       end
-  and turn_on : 'a. int -> 'a t -> unit = fun key t -> println "Stream.turn_on"; match t with
+  and turn_on : 'a. int -> 'a t -> unit = fun key t -> match t with
     | Prim p    -> Prim.turn_on key p
     | Derived d -> turn_on_derived key d
   ;;
@@ -219,9 +210,6 @@ module Stream = struct
     let key = t.uid in
     t.uid <- t.uid + 1;
     Inttbl.add tbl ~key ~data:f;
-    begin match Inttbl.find tbl key with
-    | None   -> println "wtf"
-    | Some _ -> println "makes sense (derived)" end;
     key
 
   let add_off_listener t f =
@@ -237,7 +225,6 @@ module Stream = struct
 
   let add_on_listener t f =
     let key = add_off_listener t f in
-    println "Stream.add_on_listener";
     turn_on key t;
     key
   ;;
@@ -297,6 +284,12 @@ module Stream = struct
     in
     create_with t ~update
 
+  let filter_map t ~f =
+    let update trigger x =
+      match f x with None -> () | Some y -> trigger y
+    in
+    create_with t ~update
+
   (* Should trigger initial value *)
   let fold t ~init ~f =
     let last = ref init in
@@ -306,6 +299,28 @@ module Stream = struct
       trigger y
     in
     create_with t ~update
+
+  let take t n =
+    let on_listeners      = Inttbl.create () in
+    let passive_listeners = Inttbl.create () in
+    let remaining         = ref n in
+    let key_ref           = ref None in
+    let key = add_off_listener t (fun x ->
+      if !remaining = 0
+      then Option.iter !key_ref ~f:(fun k -> turn_off k t)
+      else begin
+        decr remaining;
+        notify_all [|on_listeners; passive_listeners|] x
+      end)
+    in
+    key_ref := Some key;
+    Derived
+    { uid = 0
+    ; parents = [| key, In t |]
+    ; on_listeners
+    ; passive_listeners
+    ; off_listeners = Inttbl.create ()
+    }
 
   (* TODO: Consider switching to a new listener after [n] events if
    * this is too inefficient *)
@@ -341,19 +356,20 @@ module Stream = struct
 
   let zip = zip_with ~f:(fun x y -> (x, y))
 
-  let merge t1 t2 =
-    let on_listeners = Inttbl.create () in
+  let merge_many ts =
+    let on_listeners      = Inttbl.create () in
     let passive_listeners = Inttbl.create () in
-    let update x = notify_all [|on_listeners; passive_listeners|] x in
-    let key1 = add_off_listener t1 update in
-    let key2 = add_off_listener t2 update in
+    let update x          = notify_all [|on_listeners; passive_listeners|] x in
+    let parents = Array.map ts ~f:(fun t -> (add_off_listener t update, In t)) in
     Derived
     { uid = 0
     ; on_listeners
     ; passive_listeners
     ; off_listeners = Inttbl.create ()
-    ; parents = [| (key1, In t1); (key2, In t2) |]
+    ; parents
     }
+
+  let merge t1 t2 = merge_many [|t1; t2|]
 
   let join t =
     let on_listeners = Inttbl.create () in
@@ -554,13 +570,12 @@ let when_ cond s =
     if !(cond.Behavior.value) then notify_all [|on_listeners; passive_listeners|] x)
   in
   let key2 = add_off_listener cond.Behavior.s (fun x -> ()) in (* dummy listener *)
-  println "when_";
   Derived
   { uid = 0
   ; on_listeners
   ; passive_listeners
   ; off_listeners = Inttbl.create ()
-  ; parents = [|(key1, In cond.Behavior.s); (key2, In s)|]
+  ; parents = [|(key1, In s); (key2, In cond.Behavior.s)|]
   }
 
 let scan s ~init ~f =

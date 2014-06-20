@@ -87,7 +87,7 @@ module Stream = struct
       let go tbl f =
         Inttbl.add t.on_listeners ~key ~data:f;
         Inttbl.remove tbl key;
-        if Inttbl.length t.on_listeners = 1 then start t
+        if Inttbl.length t.on_listeners = 1 then start t;
       in
       match Inttbl.find t.off_listeners key with
       | Some f -> go t.off_listeners f
@@ -187,7 +187,8 @@ module Stream = struct
       | Some f -> go t.passive_listeners f
       | None -> failwith "Stream.turn_on_derived: Listener was not off or passive";
       end
-  and turn_on : 'a. int -> 'a t -> unit = fun key t -> match t with
+  and turn_on : 'a. int -> 'a t -> unit = fun key t -> 
+    match t with
     | Prim p    -> Prim.turn_on key p
     | Derived d -> turn_on_derived key d
   ;;
@@ -566,16 +567,16 @@ let when_ cond s =
   let passive_listeners = Inttbl.create () in
   (* TODO: This is a bit tricky...another potential error *)
   let open Stream in
-  let key1 = add_off_listener s (fun x ->
+  let key_s = add_off_listener s (fun x ->
     if !(cond.Behavior.value) then notify_all [|on_listeners; passive_listeners|] x)
   in
-  let key2 = add_off_listener cond.Behavior.s (fun x -> ()) in (* dummy listener *)
+  let key_cond = add_off_listener cond.Behavior.s (fun _ -> ()) in (* dummy listener *)
   Derived
   { uid = 0
   ; on_listeners
   ; passive_listeners
   ; off_listeners = Inttbl.create ()
-  ; parents = [|(key1, In s); (key2, In cond.Behavior.s)|]
+  ; parents = [|(key_s, In s); (key_cond, In cond.Behavior.s)|]
   }
 
 let scan s ~init ~f =
@@ -585,6 +586,23 @@ let scan s ~init ~f =
 
 let latest s ~init = scan s ~init ~f:(fun _ x -> x)
 
-let project b s         = Stream.map s ~f:(fun _ -> !(b.Behavior.value))
-let project_with b s ~f = Stream.map s ~f:(fun x -> f !(b.Behavior.value) x)
+let project_with b s ~f =
+  let on_listeners = Inttbl.create () in
+  let passive_listeners = Inttbl.create () in
+  let open Stream in
+  (* TODO: The resulting stream here should not get notified
+   * by b.Behavior.s upon a change (only when s changes)
+   * but b.Behavior.s must still be a parent of it so that
+   * it will get turned on when this stream gets turned on *)
+  let key_b = add_off_listener b.Behavior.s (fun _ -> ()) in
+  let key_s = add_off_listener s (fun x -> 
+    notify_all [|on_listeners; passive_listeners|] (f !(b.Behavior.value) x)) in
+  Derived
+  { uid = 0
+  ; on_listeners
+  ; passive_listeners
+  ; off_listeners = Inttbl.create ()
+  ; parents = [|(key_b, In b.Behavior.s); (key_s, In s)|]
+  }
 
+let project b s = project_with b s ~f:(fun bval _ -> bval)

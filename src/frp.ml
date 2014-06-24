@@ -357,6 +357,25 @@ module Stream = struct
 
   let zip = zip_with ~f:(fun x y -> (x, y))
 
+  let zip_many ts ~f =
+    let on_listeners      = Inttbl.create () in
+    let passive_listeners = Inttbl.create () in
+    let qs                = Array.init (Array.length ts) ~f:(fun _ -> Queue.create ()) in
+    let parents           = Array.mapi ts ~f:(fun i t ->
+      add_off_listener t (fun x ->
+        Queue.enqueue qs.(i) x;
+        if Array.for_all qs ~f:(fun q -> Queue.length q > 0)
+        then notify_all [|on_listeners; passive_listeners|] (f (Array.map ~f:Queue.dequeue_exn qs)))
+      , In t)
+    in
+    Derived
+    { on_listeners; passive_listeners; parents
+    ; uid = 0
+    ; off_listeners = Inttbl.create ()
+    }
+
+  let sequence ts = zip_many ts ~f:(fun xs -> xs)
+
   let merge_many ts =
     let on_listeners      = Inttbl.create () in
     let passive_listeners = Inttbl.create () in
@@ -390,19 +409,21 @@ module Stream = struct
     ; off_listeners = Inttbl.create ()
     ; parents
     }
-    
+
   let switch t =
-    let on_listeners = Inttbl.create () in
+    let on_listeners      = Inttbl.create () in
     let passive_listeners = Inttbl.create () in
-    let ls = [|on_listeners; passive_listeners|] in
-    let prev = ref None in
-    let parents = [||] in
+    let is_on ()          = Inttbl.length on_listeners > 0 in
+    let ls                = [|on_listeners; passive_listeners|] in
+    let prev              = ref None in
+    let parents           = [||] in
     let update s =
-      Option.iter !prev ~f:(fun (k, s') -> turn_off k s');
-      let key = add_off_listener s (notify_all ls) 
-      in
+      Option.iter !prev ~f:(fun (k, s') -> println "switch!";
+        try turn_off k s' with _ -> ());
+      let key = add_off_listener s (notify_all ls) in
       prev := Some (key, s);
-      Array.unsafe_set parents 1 (key, s)
+      Array.unsafe_set parents 1 (key, s);
+      if is_on () then turn_on key s
     in
     let key = add_off_listener t update in
     Array.push (key, In t) parents;
@@ -431,24 +452,6 @@ module Stream = struct
     Prim (Prim.on_interval ms ~f:(fun t -> Time.(t - t0)))
 
   let deltas ms = delta (ticks ms) ~f:(fun t1 t2 -> Time.(t2 - t1))
-
-  let sequence ts =
-    let on_listeners = Inttbl.create () in
-    let passive_listeners = Inttbl.create () in
-    let ls = [|on_listeners; passive_listeners|] in
-    let buf = Array.init (Array.length ts) ~f:(fun _ -> Queue.create ()) in
-    let parents = Array.mapi ts ~f:(fun i t ->
-      let key = add_off_listener t (fun x ->
-        Queue.enqueue buf.(i) x;
-        if Array.for_all buf ~f:(fun q -> Option.is_some (Queue.peek q))
-        then notify_all ls (Array.map buf ~f:Queue.dequeue_exn))
-      in
-      (key, In t))
-    in
-    Derived
-    { uid = 0; parents; on_listeners; passive_listeners
-    ; off_listeners = Inttbl.create ()
-    }
 
   module Infix = struct
     let (>>=) t f = bind t ~f
@@ -542,7 +545,7 @@ module Behavior = struct
   (* TODO: This may be incorrect, but I'm fairly confident it
    * is correct *)
   let join {value; s; _} =
-    let s' = Stream.(join (map ~f:(fun t -> t.s) s)) in
+    let s' = Stream.(switch (map ~f:(fun t -> t.s) s)) in
     let value' = ref !((!value).value) in
     create value' s'
 

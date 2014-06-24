@@ -45,7 +45,7 @@ module Stream : sig
       is a stream which updates with the x coordinate of the click point
       whenever the original stream updates *)
   val map : 'a t -> f:('a -> 'b) -> 'b t
-  
+
   (** Attaches a side-effecting listener to a stream and returns a subscription
       token which allows you to remove the listener. *)
   val iter : 'a t -> f:('a -> unit) -> Subscription.t
@@ -61,6 +61,10 @@ module Stream : sig
   val zip_with : 'a t -> 'b t -> f:('a -> 'b -> 'c) -> 'c t
 
   val zip : 'a t -> 'b t -> ('a * 'b) t
+
+  val zip_many : 'a t array -> f:('a array -> 'b) -> 'b t
+
+  val sequence : 'a t array -> 'a array t
 
   val merge : 'a t -> 'a t -> 'a t
 

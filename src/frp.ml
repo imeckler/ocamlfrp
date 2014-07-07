@@ -418,8 +418,7 @@ module Stream = struct
     let prev              = ref None in
     let parents           = [||] in
     let update s =
-      Option.iter !prev ~f:(fun (k, s') -> println "switch!";
-        try turn_off k s' with _ -> ());
+      Option.iter !prev ~f:(fun (k, s') -> try turn_off k s' with _ -> ());
       let key = add_off_listener s (notify_all ls) in
       prev := Some (key, s);
       Array.unsafe_set parents 1 (key, s);

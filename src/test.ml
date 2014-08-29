@@ -14,4 +14,4 @@ let switch_test =
       let s = match lbl with `A -> "A" | `B -> "B" | `C -> "C" in
       map (ticks 20.) ~f:(fun _ -> s))))
 
-let () = Frp.Stream.iter switch_test ~f:Core.println |> ignore
+let () = Frp.Stream.iter switch_test ~f:print_endline |> ignore

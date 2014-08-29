@@ -358,11 +358,14 @@ module Stream = struct
   let zip = zip_with ~f:(fun x y -> (x, y))
 
   let zip_many ts ~f =
+    print_endline "Stream.zip_many";
     let on_listeners      = Inttbl.create () in
     let passive_listeners = Inttbl.create () in
     let qs                = Array.init (Array.length ts) ~f:(fun _ -> Queue.create ()) in
     let parents           = Array.mapi ts ~f:(fun i t ->
+      print_endline ("Stream.zip_many: mapi with i = " ^ string_of_int i);
       add_off_listener t (fun x ->
+        print_endline "Stream.zip_many: listener";
         Queue.enqueue qs.(i) x;
         if Array.for_all qs ~f:(fun q -> Queue.length q > 0)
         then notify_all [|on_listeners; passive_listeners|] (f (Array.map ~f:Queue.dequeue_exn qs)))
